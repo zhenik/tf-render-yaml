@@ -43,6 +43,6 @@ data "template_file" "helm_config" {
 }
 
 
-#output "rendered" {
-#  value = data.template_file.helm_config.rendered
-#}
+output "rendered" {
+  value = data.template_file.helm_config.rendered
+}
