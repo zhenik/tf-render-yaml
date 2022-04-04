@@ -42,6 +42,43 @@ data "template_file" "helm_config" {
   }
 }
 
+data "template_file" "vector_config" {
+  template = file("${path.module}/resource/vector-config.yaml")
+  vars     = {
+    data_dir = "/tmp"
+  }
+}
+
+#resource "null_resource" "local" {
+#  triggers = {
+#    template = data.template_file.vector_config.rendered
+#  }
+#
+#  # Render to local file on machine
+#  # https://github.com/hashicorp/terraform/issues/8090#issuecomment-291823613
+#  provisioner "local-exec" {
+#    command = format(
+#      "cat <<\"EOF\" > \"%s\"\n%s\nEOF",
+#      "vector-config_rendered.yaml",
+#      data.template_file.vector_config.rendered
+#    )
+#  }
+#}
+
+resource "local_file" "vector_config_rendered" {
+  content = data.template_file.vector_config.rendered
+  filename = "vector-config_rendered.yaml"
+}
+
+resource "null_resource" "run" {
+  triggers = {
+    file = data.template_file.vector_config.rendered
+  }
+
+  provisioner "local-exec" {
+    command = "vector test --config-yaml ${local_file.vector_config_rendered.filename}"
+  }
+}
 
 output "rendered" {
   value = data.template_file.helm_config.rendered

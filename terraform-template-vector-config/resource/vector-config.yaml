@@ -1,4 +1,4 @@
-data_dir: /tmp
+data_dir: ${data_dir}
 sources:
   stdin:
     type: stdin
@@ -21,17 +21,17 @@ transforms:
         # parse_apache_log(.message, format: "common") ??
         parse_groks(value: .message, 
           patterns: [
-            "%{CUSTOM_HTTPD_COMMONLOG}",
-            "%{CUSTOM_HTTPD_COMMONLOG} %{CUSTOM_REFERER} %{CUSTOM_AGENT} %{CUSTOM_CID} %{integer:timetaken}"
+            "%%{CUSTOM_HTTPD_COMMONLOG}",
+            "%%{CUSTOM_HTTPD_COMMONLOG} %%{CUSTOM_REFERER} %%{CUSTOM_AGENT} %%{CUSTOM_CID} %%{integer:timetaken}"
           ],
           aliases: {
-            "CUSTOM_HTTPD_COMMONLOG": "%{IPORHOST:host} %{HTTPDUSER:user} %{HTTPDUSER} \\[%{CUSTOM_HTTPDATE}\\] \"%{CUSTOM_REQUEST}\" %{CUSTOM_STATUS_CODE} (?:%{integer:size}|-)",
-            "CUSTOM_REQUEST": "(?:%{WORD:method} %{NOTSPACE:path}(?: HTTP\\/%{NUMBER:httpversion})?|%{DATA})",
-            "CUSTOM_STATUS_CODE": "%{integer:code}",
-            "CUSTOM_REFERER": "\\\"%{DATA:referrer}\\\"",
-            "CUSTOM_AGENT": "\\\"%{DATA:agent}\\\"",
-            "CUSTOM_CID": "\\\"CID:%{DATA:cid}\\\"",
-            "CUSTOM_HTTPDATE": "%{HTTPDATE:tomcat_custom_log_timestamp}",
+            "CUSTOM_HTTPD_COMMONLOG": "%%{IPORHOST:host} %%{HTTPDUSER:user} %%{HTTPDUSER} \\[%%{CUSTOM_HTTPDATE}\\] \"%%{CUSTOM_REQUEST}\" %%{CUSTOM_STATUS_CODE} (?:%%{integer:size}|-)",
+            "CUSTOM_REQUEST": "(?:%%{WORD:method} %%{NOTSPACE:path}(?: HTTP\\/%%{NUMBER:httpversion})?|%%{DATA})",
+            "CUSTOM_STATUS_CODE": "%%{integer:code}",
+            "CUSTOM_REFERER": "\\\"%%{DATA:referrer}\\\"",
+            "CUSTOM_AGENT": "\\\"%%{DATA:agent}\\\"",
+            "CUSTOM_CID": "\\\"CID:%%{DATA:cid}\\\"",
+            "CUSTOM_HTTPDATE": "%%{HTTPDATE:tomcat_custom_log_timestamp}",
           }
         )
       . = merge!(., structured)
