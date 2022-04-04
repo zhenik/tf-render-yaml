@@ -1,0 +1,180 @@
+data_dir: /tmp
+sources:
+  stdin:
+    type: stdin
+    decoding:
+      codec: json
+# Data from vector source `kubernetes_logs` comes in json format ONLY.
+# The only field that must take our attention is `.message` field.
+# `.message` field can come in different formats that we need to parse
+transforms:
+  parser:
+    type: remap
+    drop_on_error: true
+    reroute_dropped: true
+    drop_on_abort: true
+    inputs:
+      - stdin
+    source: |-
+      structured,err = 
+        parse_json(.message) ??
+        # parse_apache_log(.message, format: "common") ??
+        parse_groks(value: .message, 
+          patterns: [
+            "%{CUSTOM_HTTPD_COMMONLOG}",
+            "%{CUSTOM_HTTPD_COMMONLOG} %{CUSTOM_REFERER} %{CUSTOM_AGENT} %{CUSTOM_CID} %{integer:timetaken}"
+          ],
+          aliases: {
+            "CUSTOM_HTTPD_COMMONLOG": "%{IPORHOST:host} %{HTTPDUSER:user} %{HTTPDUSER} \\[%{CUSTOM_HTTPDATE}\\] \"%{CUSTOM_REQUEST}\" %{CUSTOM_STATUS_CODE} (?:%{integer:size}|-)",
+            "CUSTOM_REQUEST": "(?:%{WORD:method} %{NOTSPACE:path}(?: HTTP\\/%{NUMBER:httpversion})?|%{DATA})",
+            "CUSTOM_STATUS_CODE": "%{integer:code}",
+            "CUSTOM_REFERER": "\\\"%{DATA:referrer}\\\"",
+            "CUSTOM_AGENT": "\\\"%{DATA:agent}\\\"",
+            "CUSTOM_CID": "\\\"CID:%{DATA:cid}\\\"",
+            "CUSTOM_HTTPDATE": "%{HTTPDATE:tomcat_custom_log_timestamp}",
+          }
+        )
+      . = merge!(., structured)
+      if exists(.time) { # parse timestamp for `json-log`
+        # original - `2022-03-21T08:31:26.789+0200`
+        parsed_timestamp = parse_timestamp!(.time, format: "%Y-%m-%dT%H:%M:%S%.f%z")
+        # parsed_timestamp - `2022-03-21T08:31:26.789+02:00`
+        .timestamp = parsed_timestamp
+      }
+      if exists(.tomcat_custom_log_timestamp) { # parse timestamp for `custom-tomcat-log`
+        .timestamp = to_timestamp!(.tomcat_custom_log_timestamp)
+        del(.tomcat_custom_log_timestamp)
+      }
+  healthcheck_filter:
+    type: filter
+    inputs:
+      - parser
+    condition:
+      type: vrl
+      source: |-
+        !contains!(.agent, "kube-probe", case_sensitive: false)
+# https://github.com/vectordotdev/vector/blob/master/soaks/tests/http_pipelines_blackhole/terraform/vector.toml#L82-L107
+# "10.102.8.11 - - [17/Mar/2022:22:06:03 +0100] \"GET /shipping-guide/servicetexts/api/text?productCode=5100&language=en&receiverCountry=NO HTTP/1.1\" 200 395"
+# original https://github.com/bring/sende/blob/master/src/main/resources/application.yml#L13
+# "10.101.12.212 - - [21/Mar/2022:12:50:38 +0000] \"GET /pickuppoint/api/status.json HTTP/1.1\" 200 862 \"-\" \"Java-http-client/16.0.2\" \"CID:f1904c\" 37"
+sinks:
+  stdout:
+    type: console
+    inputs: [ healthcheck_filter ]
+    encoding:
+      codec: json
+  blackhole_dropped_logs:
+    type: blackhole
+    inputs: [ parser.dropped ]
+
+
+tests:
+  - name: Parse `json-log` format
+    inputs:
+      - insert_at: parser
+        type: log
+        log_fields:
+          message: '{"instant":{"epochSecond":1647851486,"nanoOfSecond":789226424},"thread":"qtp892555958-27","level":"WARN","loggerName":"com.mybring.common.web2.MybringResponseHeaders","message":"Not adding no-cache headers since response was already commited. You might want to set headers manually for /pickuppoint/revision.txt (HTTP status 200)","endOfBatch":false,"loggerFqcn":"org.apache.logging.slf4j.Log4jLogger","contextMap":{"correlationId":"ogpxod"},"threadId":27,"threadPriority":5,"source":{"class":"com.mybring.common.web2.MybringResponseHeaders","method":"addSecurityAndNoCacheHeadersIfMissing","file":"MybringResponseHeaders.java","line":40},"time":"2022-03-21T08:31:26.789+0200"}'
+    outputs:
+      - extract_from: parser
+        conditions:
+          - type: vrl
+            source: |-
+              assert!(exists(.contextMap), "no contextMap field provided")
+              assert!(exists(.instant))
+              assert!(exists(.message))
+              assert!(exists(.level))
+              assert!(exists(.loggerFqcn))
+              assert!(exists(.loggerName))
+              assert!(exists(.source))
+              assert!(exists(.source.class))
+              assert!(exists(.source.file))
+              assert!(exists(.source.line))
+              assert!(exists(.source.method))
+              assert!(exists(.thread))
+              assert!(exists(.threadId))
+              assert!(exists(.threadPriority))
+              assert!(exists(.time))
+              assert!(exists(.timestamp))
+              # pay attention that original timestamp `2022-03-21T08:31:26.789+0200`, parsed with -2 hours
+              assert_eq!(.timestamp, t'2022-03-21T06:31:26.789Z')
+
+  - name: Parse `tomcat-custom-log` format
+    inputs:
+      - insert_at: parser
+        type: log
+        log_fields:
+          message: "10.101.12.212 - - [21/Mar/2022:12:50:38 +0100] \"GET /pickuppoint/api/status.json HTTP/1.1\" 200 862 \"-\" \"Java-http-client/16.0.2\" \"CID:f1904c\" 37"
+    outputs:
+      - extract_from: parser
+        conditions:
+          - type: vrl
+            source: |-
+              assert!(exists(.host))
+              assert_eq!(.host, "10.101.12.212")
+              assert!(exists(.method))
+              assert_eq!(.method, "GET")
+              assert!(exists(.path))
+              assert_eq!(.path, "/pickuppoint/api/status.json")
+              assert!(exists(.code))
+              assert_eq!(.code, 200)
+              assert!(exists(.size))
+              assert_eq!(.size, 862)
+              assert!(exists(.user))
+              assert_eq!(.user, "-")
+              assert!(exists(.referrer))
+              assert_eq!(.referrer, "-")
+              assert!(exists(.agent))
+              assert_eq!(.agent, "Java-http-client/16.0.2")
+              assert!(exists(.cid))
+              assert_eq!(.cid, "f1904c")
+              assert!(exists(.timetaken))
+              assert_eq!(.timetaken, 37)
+              assert!(exists(.timestamp))
+              # pay attention that original timestamp `21/Mar/2022:12:50:38 +0100`, parsed with -1 hour
+              assert_eq!(.timestamp, t'2022-03-21T11:50:38Z')
+  - name: Parse `apache-common-log` format
+    inputs:
+      - insert_at: parser
+        type: log
+        log_fields:
+          message: "10.102.8.11 - - [17/Mar/2022:22:06:03 +0100] \"GET /shipping-guide/servicetexts/api/text?productCode=5100&language=en&receiverCountry=NO HTTP/1.1\" 200 395"
+    outputs:
+      - extract_from: parser
+        conditions:
+          - type: vrl
+            source: |-
+              assert!(exists(.host))
+              assert_eq!(.host, "10.102.8.11")
+              assert!(exists(.method))
+              assert_eq!(.method, "GET")
+              assert!(exists(.path))
+              assert_eq!(.path, "/shipping-guide/servicetexts/api/text?productCode=5100&language=en&receiverCountry=NO")
+              assert!(exists(.code))
+              assert_eq!(.code, 200)
+              assert!(exists(.size))
+              assert_eq!(.size, 395)
+              assert!(exists(.user))
+              assert_eq!(.user, "-")
+              assert_eq!(exists(.referrer), false)
+              assert_eq!(exists(.agent), false)
+              assert_eq!(exists(.cid), false)
+              assert_eq!(exists(.timetaken), false)
+              assert!(exists(.timestamp))
+              # pay attention that original timestamp `17/Mar/2022:22:06:03 +0100`, parsed with -1 hour
+              assert_eq!(.timestamp, t'2022-03-17T21:06:03Z')
+  - name: Parse `healthcheck-log` format is filtered out by agent name contains `kube-probe` key-word
+    inputs:
+      - insert_at: parser
+        type: log
+        log_fields:
+          message: "10.102.8.152 - - [25/Mar/2022:11:10:16 +0000] \"GET /pickuppoint/revision.txt HTTP/1.1\" 200 90 \"-\" \"kube-probe/1.21\" \"CID:qaYxyQ\" 1"
+    outputs:
+      - extract_from: parser
+        conditions:
+          - type: vrl
+            source: |-
+              assert!(exists(.agent))
+              assert_eq!(.agent, "kube-probe/1.21")
+    no_outputs_from:
+      - healthcheck_filter

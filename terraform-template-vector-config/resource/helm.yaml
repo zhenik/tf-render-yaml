@@ -1,0 +1,43 @@
+role: "Agent"
+nameOverride: "vector-applogs"
+image:
+  repository: timberio/vector
+  pullPolicy: IfNotPresent
+  tag: "0.20.0-distroless-libc"
+podLabels:
+  aadpodidbinding: ${aadpodidbinding}
+serviceAccount:
+  create: true
+  name: "vector-applogs-service-account"
+podSecurityContext:
+  runAsUser: 0
+env:
+  - name: OPENSEARCH_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: "opensearch-vector-creds"
+        key: "password"
+  - name: OPENSEARCH_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: "opensearch-vector-creds"
+        key: "username"
+# Following recommendation for role `Agent` https://vector.dev/docs/setup/installation/platforms/kubernetes/#agent-resource-limits
+resources:
+  requests:
+    cpu: "${requests_cpu}"
+    memory: "${requests_memory}"
+  limits:
+    cpu: "${limits_cpu}"
+    memory: "${limits_memory}"
+extraVolumeMounts:
+  - name: "vector-applogs-secret-store"
+    mountPath: "/mnt/secrets-store"
+    readOnly: true
+extraVolumes:
+  - name: "vector-applogs-secret-store"
+    csi:
+      driver: secrets-store.csi.k8s.io
+      readOnly: true
+      volumeAttributes:
+        secretProviderClass: "vector-applogs-secret-provider"
