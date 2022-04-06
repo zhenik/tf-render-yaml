@@ -76,7 +76,7 @@ resource "null_resource" "run" {
   }
 
   provisioner "local-exec" {
-    command = "vector test --config-yaml ${local_file.vector_config_rendered.filename}"
+    command = "vector validate --config-yaml ${local_file.vector_config_rendered.filename} && vector test --config-yaml ${local_file.vector_config_rendered.filename}"
   }
 }
 
