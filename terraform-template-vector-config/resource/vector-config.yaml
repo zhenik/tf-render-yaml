@@ -1,37 +1,87 @@
-data_dir: ${data_dir}
+# volume with name `data` is already mounted with mountPath `/vector-data-dir`
+data_dir: "$${VECTOR_DATA_DIR:-/tmp}"
+api:
+  enabled: true
+  address: 127.0.0.1:8686
+  playground: false
 sources:
-  stdin:
-    type: stdin
-    decoding:
-      codec: json
-# Data from vector source `kubernetes_logs` comes in json format ONLY.
+  # https://vector.dev/docs/reference/configuration/sources/kubernetes_logs/
+  kubernetes_logs:
+    type: kubernetes_logs
+    namespace_annotation_fields:
+      namespace_labels: ""
+    pod_annotation_fields:
+      pod_annotations: ""
+      pod_ip: ""
+      pod_ips: ""
+      pod_labels: ""
+      pod_uid: "kubernetes.pod_id"
+      pod_owner: ""
+      pod_namespace: "kubernetes.namespace_name"
+      pod_node_name: "kubernetes.host"
+    extra_field_selector: "metadata.namespace=checkout" # todo: setup for env `test` only
+    exclude_paths_glob_patterns:
+      - "**/*.gz" # default
+      - "**/*.tmp" # default
+      - "/var/log/containers/*_kube-system_*.log"
+      - "/var/log/containers/*_gatekeeper-system_*.log"
+      - "/var/log/containers/*_management_*.log"
+      - "/var/log/containers/*_glow_*.log"
+    timezone: "local"
+  ingresslogs:
+    type: kubernetes_logs
+    namespace_annotation_fields:
+      namespace_labels: ""
+    pod_annotation_fields:
+      pod_annotations: ""
+      pod_ip: ""
+      pod_ips: ""
+      pod_labels: ""
+      pod_uid: "kubernetes.pod_id"
+      pod_owner: ""
+      pod_namespace: "kubernetes.namespace_name"
+      pod_node_name: "kubernetes.host"
+    extra_field_selector: "metadata.namespace=management"
+    extra_label_selector: "app.kubernetes.io/name=ingress-nginx"
+    timezone: "local"
+# Data from vector source `kubernetes_logs` comes in json format already.
 # The only field that must take our attention is `.message` field.
 # `.message` field can come in different formats that we need to parse
 transforms:
-  parser:
+  parser_ingresslogs:
     type: remap
     drop_on_error: true
     reroute_dropped: true
     drop_on_abort: true
     inputs:
-      - stdin
+      - ingresslogs
+    source: |-
+      log(join!(["input for parser_ingresslogs .message=", .message]), level: "info")
+      . = merge!(., parse_json!(.message))
+  message_parser:
+    type: remap
+    drop_on_error: true
+    reroute_dropped: true
+    drop_on_abort: true
+    inputs:
+      - kubernetes_logs
     source: |-
       structured,err = 
         parse_json(.message) ??
         # parse_apache_log(.message, format: "common") ??
         parse_groks(value: .message, 
           patterns: [
-            "%%{CUSTOM_HTTPD_COMMONLOG}",
-            "%%{CUSTOM_HTTPD_COMMONLOG} %%{CUSTOM_REFERER} %%{CUSTOM_AGENT} %%{CUSTOM_CID} %%{integer:timetaken}"
+            "%{CUSTOM_HTTPD_COMMONLOG}",
+            "%{CUSTOM_HTTPD_COMMONLOG} %{CUSTOM_REFERER} %{CUSTOM_AGENT} %{CUSTOM_CID} %{integer:timetaken}"
           ],
           aliases: {
-            "CUSTOM_HTTPD_COMMONLOG": "%%{IPORHOST:host} %%{HTTPDUSER:user} %%{HTTPDUSER} \\[%%{CUSTOM_HTTPDATE}\\] \"%%{CUSTOM_REQUEST}\" %%{CUSTOM_STATUS_CODE} (?:%%{integer:size}|-)",
-            "CUSTOM_REQUEST": "(?:%%{WORD:method} %%{NOTSPACE:path}(?: HTTP\\/%%{NUMBER:httpversion})?|%%{DATA})",
-            "CUSTOM_STATUS_CODE": "%%{integer:code}",
-            "CUSTOM_REFERER": "\\\"%%{DATA:referrer}\\\"",
-            "CUSTOM_AGENT": "\\\"%%{DATA:agent}\\\"",
-            "CUSTOM_CID": "\\\"CID:%%{DATA:cid}\\\"",
-            "CUSTOM_HTTPDATE": "%%{HTTPDATE:tomcat_custom_log_timestamp}",
+            "CUSTOM_HTTPD_COMMONLOG": "%{IPORHOST:host} %{HTTPDUSER:user} %{HTTPDUSER} \\[%{CUSTOM_HTTPDATE}\\] \"%{CUSTOM_REQUEST}\" %{CUSTOM_STATUS_CODE} (?:%{integer:size}|-)",
+            "CUSTOM_REQUEST": "(?:%{WORD:method} %{NOTSPACE:path}(?: HTTP\\/%{NUMBER:httpversion})?|%{DATA})",
+            "CUSTOM_STATUS_CODE": "%{integer:code}",
+            "CUSTOM_REFERER": "\\\"%{DATA:referrer}\\\"",
+            "CUSTOM_AGENT": "\\\"%{DATA:agent}\\\"",
+            "CUSTOM_CID": "\\\"CID:%{DATA:cid}\\\"",
+            "CUSTOM_HTTPDATE": "%{HTTPDATE:tomcat_custom_log_timestamp}",
           }
         )
       . = merge!(., structured)
@@ -48,35 +98,66 @@ transforms:
   healthcheck_filter:
     type: filter
     inputs:
-      - parser
+      - message_parser
     condition:
       type: vrl
       source: |-
         !contains!(.agent, "kube-probe", case_sensitive: false)
-# https://github.com/vectordotdev/vector/blob/master/soaks/tests/http_pipelines_blackhole/terraform/vector.toml#L82-L107
-# "10.102.8.11 - - [17/Mar/2022:22:06:03 +0100] \"GET /shipping-guide/servicetexts/api/text?productCode=5100&language=en&receiverCountry=NO HTTP/1.1\" 200 395"
-# original https://github.com/bring/sende/blob/master/src/main/resources/application.yml#L13
-# "10.101.12.212 - - [21/Mar/2022:12:50:38 +0000] \"GET /pickuppoint/api/status.json HTTP/1.1\" 200 862 \"-\" \"Java-http-client/16.0.2\" \"CID:f1904c\" 37"
 sinks:
   stdout:
     type: console
-    inputs: [ healthcheck_filter ]
+    inputs: [ parser_ingresslogs ]
     encoding:
       codec: json
+  es_applogs:
+    type: elasticsearch
+    inputs: [ healthcheck_filter ]
+    buffer:
+      type: disk
+      max_size: 10000000000 # 10GB
+      when_full: block
+    batch:
+      max_bytes: 100000000 # 10MB
+      timeout_secs: 15
+    auth:
+      strategy: "basic"
+      user: "$${OUTPUT_USERNAME}"
+      password: "$${OUTPUT_PASSWORD}"
+    endpoint: "https://public-appdata-customer-front-test.aivencloud.com:23594"
+    bulk:
+      index: "applogs-%Y.%m.%d" # applogs-2022.03.01
+    compression: gzip
+  es_ingresslogs:
+    type: elasticsearch
+    inputs: [ parser_ingresslogs ]
+    buffer:
+      type: disk
+      max_size: 10000000000 # 10GB
+      when_full: block
+    batch:
+      max_bytes: 100000000 # 10MB
+      timeout_secs: 15
+    auth:
+      strategy: "basic"
+      user: "$${OUTPUT_USERNAME}"
+      password: "$${OUTPUT_PASSWORD}"
+    endpoint: "https://public-appdata-customer-front-test.aivencloud.com:23594"
+    bulk:
+      index: "ingresslogs-%Y.%m.%d" # ingresslogs-2022.04.04
+    compression: gzip
   blackhole_dropped_logs:
     type: blackhole
-    inputs: [ parser.dropped ]
-
+    inputs: [ message_parser.dropped, parser_ingresslogs.dropped ]
 
 tests:
   - name: Parse `json-log` format
     inputs:
-      - insert_at: parser
+      - insert_at: message_parser
         type: log
         log_fields:
           message: '{"instant":{"epochSecond":1647851486,"nanoOfSecond":789226424},"thread":"qtp892555958-27","level":"WARN","loggerName":"com.mybring.common.web2.MybringResponseHeaders","message":"Not adding no-cache headers since response was already commited. You might want to set headers manually for /pickuppoint/revision.txt (HTTP status 200)","endOfBatch":false,"loggerFqcn":"org.apache.logging.slf4j.Log4jLogger","contextMap":{"correlationId":"ogpxod"},"threadId":27,"threadPriority":5,"source":{"class":"com.mybring.common.web2.MybringResponseHeaders","method":"addSecurityAndNoCacheHeadersIfMissing","file":"MybringResponseHeaders.java","line":40},"time":"2022-03-21T08:31:26.789+0200"}'
     outputs:
-      - extract_from: parser
+      - extract_from: message_parser
         conditions:
           - type: vrl
             source: |-
@@ -101,12 +182,12 @@ tests:
 
   - name: Parse `tomcat-custom-log` format
     inputs:
-      - insert_at: parser
+      - insert_at: message_parser
         type: log
         log_fields:
           message: "10.101.12.212 - - [21/Mar/2022:12:50:38 +0100] \"GET /pickuppoint/api/status.json HTTP/1.1\" 200 862 \"-\" \"Java-http-client/16.0.2\" \"CID:f1904c\" 37"
     outputs:
-      - extract_from: parser
+      - extract_from: message_parser
         conditions:
           - type: vrl
             source: |-
@@ -135,12 +216,12 @@ tests:
               assert_eq!(.timestamp, t'2022-03-21T11:50:38Z')
   - name: Parse `apache-common-log` format
     inputs:
-      - insert_at: parser
+      - insert_at: message_parser
         type: log
         log_fields:
           message: "10.102.8.11 - - [17/Mar/2022:22:06:03 +0100] \"GET /shipping-guide/servicetexts/api/text?productCode=5100&language=en&receiverCountry=NO HTTP/1.1\" 200 395"
     outputs:
-      - extract_from: parser
+      - extract_from: message_parser
         conditions:
           - type: vrl
             source: |-
@@ -165,12 +246,12 @@ tests:
               assert_eq!(.timestamp, t'2022-03-17T21:06:03Z')
   - name: Parse `healthcheck-log` format is filtered out by agent name contains `kube-probe` key-word
     inputs:
-      - insert_at: parser
+      - insert_at: message_parser
         type: log
         log_fields:
           message: "10.102.8.152 - - [25/Mar/2022:11:10:16 +0000] \"GET /pickuppoint/revision.txt HTTP/1.1\" 200 90 \"-\" \"kube-probe/1.21\" \"CID:qaYxyQ\" 1"
     outputs:
-      - extract_from: parser
+      - extract_from: message_parser
         conditions:
           - type: vrl
             source: |-
@@ -178,3 +259,19 @@ tests:
               assert_eq!(.agent, "kube-probe/1.21")
     no_outputs_from:
       - healthcheck_filter
+
+  - name: Parse `ingress-log` format
+    inputs:
+      - insert_at: parser_ingresslogs
+        type: log
+        log_fields:
+          message: '{"@timestamp":"2022-04-04T12:24:21+00:00","req_id":"22b4c4d158387412ef6aff0ecdcc5d8b","remote_addr":"81.166.172.31","remote_user":"","request":"GET /track/assets/6d05055c0c9674fe.svg HTTP/1.1","status":"200","bytes_sent":"983","http_referer":"https://glow.posten.no/","http_user_agent":"Mozilla/5.0 (iPhone; CPU iPhone OS 15_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Mobile/15E148 Safari/604.1","request_method":"GET","request_length":"490","request_time":"0.001","proxy_upstream_name":"glow-glow-tracking-8080","upstream_addr":"10.100.12.220:8080","upstream_response_length":"983","upstream_response_time":"0.004","upstream_status":"200"}'
+    outputs:
+      - extract_from: parser_ingresslogs
+        conditions:
+          - type: vrl
+            source: |-
+              assert!(exists(.@timestamp))
+              assert_eq!(.@timestamp, "2022-04-04T12:24:21+00:00")
+              assert!(exists(.req_id))
+              assert_eq!(.req_id, "22b4c4d158387412ef6aff0ecdcc5d8b")

@@ -41,28 +41,8 @@ locals {
     }
   )
 
-  vector_config = templatefile("${path.module}/resource/vector-config.yaml",
-    {
-      data_dir = "/tmp"
-    }
-  )
+  vector_config = file("${path.module}/resource/vector-config.yaml")
 }
-
-#resource "null_resource" "local" {
-#  triggers = {
-#    template = data.template_file.vector_config.rendered
-#  }
-#
-#  # Render to local file on machine
-#  # https://github.com/hashicorp/terraform/issues/8090#issuecomment-291823613
-#  provisioner "local-exec" {
-#    command = format(
-#      "cat <<\"EOF\" > \"%s\"\n%s\nEOF",
-#      "vector-config_rendered.yaml",
-#      data.template_file.vector_config.rendered
-#    )
-#  }
-#}
 
 resource "local_file" "vector_config_rendered" {
   content = local.vector_config
@@ -75,14 +55,15 @@ resource "null_resource" "run" {
   }
 
   provisioner "local-exec" {
-    command = "vector validate --config-yaml ${local_file.vector_config_rendered.filename} && vector test --config-yaml ${local_file.vector_config_rendered.filename}"
+    #command = "vector validate --config-yaml ${local_file.vector_config_rendered.filename} && vector test --config-yaml ${local_file.vector_config_rendered.filename}"
+    command = "vector test --config-yaml ${local_file.vector_config_rendered.filename}"
   }
 }
 
 resource "local_file" "helm_full_config_rendered" {
   content = <<-EOT
 ${local.pre_helm_config}
-  ${indent(2,local.vector_config)})
+  ${indent(2,local.vector_config)}
 EOT
   filename = "helm-full-config_rendered.yaml"
 }
