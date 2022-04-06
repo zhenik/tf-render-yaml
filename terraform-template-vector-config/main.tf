@@ -80,6 +80,10 @@ resource "null_resource" "run" {
   }
 }
 
-output "rendered" {
-  value = data.template_file.helm_config.rendered
+resource "local_file" "helm_config_rendered" {
+  content = <<-EOT
+${data.template_file.helm_config.rendered}
+  ${indent(2,data.template_file.vector_config.rendered)})
+EOT
+  filename = "helm-config_rendered.yaml"
 }

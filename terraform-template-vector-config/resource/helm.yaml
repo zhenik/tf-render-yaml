@@ -41,3 +41,4 @@ extraVolumes:
       readOnly: true
       volumeAttributes:
         secretProviderClass: "vector-applogs-secret-provider"
+customConfig:
