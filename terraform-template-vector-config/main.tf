@@ -29,24 +29,23 @@ variable "helm_conf_resource" {
   }
 }
 
-data "template_file" "helm_config" {
-  template = file("${path.module}/resource/helm.yaml")
-  vars     = {
-    aadpodidbinding = var.helm_conf.aadpodidbinding
-    requests_cpu    = var.helm_conf_resource.requests.cpu
-    requests_memory = var.helm_conf_resource.requests.memory
+locals {
+  pre_helm_config = templatefile("${path.module}/resource/helm.yaml",
+    {
+      aadpodidbinding = var.helm_conf.aadpodidbinding
+      requests_cpu    = var.helm_conf_resource.requests.cpu
+      requests_memory = var.helm_conf_resource.requests.memory
 
-    limits_cpu    = var.helm_conf_resource.limits.cpu
-    limits_memory = var.helm_conf_resource.limits.memory
+      limits_cpu    = var.helm_conf_resource.limits.cpu
+      limits_memory = var.helm_conf_resource.limits.memory
+    }
+  )
 
-  }
-}
-
-data "template_file" "vector_config" {
-  template = file("${path.module}/resource/vector-config.yaml")
-  vars     = {
-    data_dir = "/tmp"
-  }
+  vector_config = templatefile("${path.module}/resource/vector-config.yaml",
+    {
+      data_dir = "/tmp"
+    }
+  )
 }
 
 #resource "null_resource" "local" {
@@ -66,13 +65,13 @@ data "template_file" "vector_config" {
 #}
 
 resource "local_file" "vector_config_rendered" {
-  content = data.template_file.vector_config.rendered
+  content = local.vector_config
   filename = "vector-config_rendered.yaml"
 }
 
 resource "null_resource" "run" {
   triggers = {
-    file = data.template_file.vector_config.rendered
+    file = local.vector_config
   }
 
   provisioner "local-exec" {
@@ -80,10 +79,10 @@ resource "null_resource" "run" {
   }
 }
 
-resource "local_file" "helm_config_rendered" {
+resource "local_file" "helm_full_config_rendered" {
   content = <<-EOT
-${data.template_file.helm_config.rendered}
-  ${indent(2,data.template_file.vector_config.rendered)})
+${local.pre_helm_config}
+  ${indent(2,local.vector_config)})
 EOT
-  filename = "helm-config_rendered.yaml"
+  filename = "helm-full-config_rendered.yaml"
 }
