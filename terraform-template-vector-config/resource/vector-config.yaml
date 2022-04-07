@@ -1,5 +1,5 @@
 # volume with name `data` is already mounted with mountPath `/vector-data-dir`
-data_dir: "$${VECTOR_DATA_DIR:-/tmp}"
+data_dir: "${VECTOR_DATA_DIR:-/tmp}"
 api:
   enabled: true
   address: 127.0.0.1:8686
@@ -121,8 +121,8 @@ sinks:
       timeout_secs: 15
     auth:
       strategy: "basic"
-      user: "$${OUTPUT_USERNAME}"
-      password: "$${OUTPUT_PASSWORD}"
+      user: "${OUTPUT_USERNAME}"
+      password: "${OUTPUT_PASSWORD}"
     endpoint: "https://public-appdata-customer-front-test.aivencloud.com:23594"
     bulk:
       index: "applogs-%Y.%m.%d" # applogs-2022.03.01
@@ -139,8 +139,8 @@ sinks:
       timeout_secs: 15
     auth:
       strategy: "basic"
-      user: "$${OUTPUT_USERNAME}"
-      password: "$${OUTPUT_PASSWORD}"
+      user: "${OUTPUT_USERNAME}"
+      password: "${OUTPUT_PASSWORD}"
     endpoint: "https://public-appdata-customer-front-test.aivencloud.com:23594"
     bulk:
       index: "ingresslogs-%Y.%m.%d" # ingresslogs-2022.04.04

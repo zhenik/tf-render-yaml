@@ -22,6 +22,8 @@ env:
       secretKeyRef:
         name: "opensearch-vector-creds"
         key: "username"
+  - name: VECTOR_DATA_DIR
+    value: "/vector-data-dir"
 # Following recommendation for role `Agent` https://vector.dev/docs/setup/installation/platforms/kubernetes/#agent-resource-limits
 resources:
   requests:
